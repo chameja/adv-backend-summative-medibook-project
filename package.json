@@ -1,0 +1,26 @@
+{
+  "name": "adv-backend-summative-medibook-project",
+  "version": "1.0.0",
+  "description": "MediBook clinic appointment system - Express, MySQL, Redis",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chameja/adv-backend-summative-medibook-project.git"
+  },
+  "author": "Chipo Hameja",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/chameja/adv-backend-summative-medibook-project/issues"
+  },
+  "homepage": "https://github.com/chameja/adv-backend-summative-medibook-project#readme",
+  "dependencies": {
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0",
+    "mysql2": "^3.24.6"
+  }
+}
