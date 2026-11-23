@@ -128,3 +128,119 @@ Create a **simple HTML page** (served by your Express app at `GET /feedback`) co
 - A short **viva/demo (10 minutes)** walkthrough.
 
 **Automatic penalties:** SQL injection vector anywhere in the app (−15), secrets committed to the repo (−5), app does not start per README instructions (−10), work the student cannot explain in the video (or at a follow-up viva if called) | Academic integrity referral; affected criteria re-scored at Developing or below |
+
+---
+
+## Part C — API Reference & Design Justifications
+
+All endpoints are under `/api`, accept and return JSON, and use plural resource nouns.
+Datetimes are clinic-local wall-clock times in the form `YYYY-MM-DD HH:MM`.
+
+### Endpoints
+
+| Method | Path | Purpose | Success |
+|---|---|---|---|
+| GET | `/api/patients` | List patients | 200 |
+| POST | `/api/patients` | Create patient | 201 + `Location` |
+| GET | `/api/patients/:id` | Get one patient | 200 |
+| PUT | `/api/patients/:id` | Replace patient (all fields required) | 200 |
+| PATCH | `/api/patients/:id` | Partially update patient | 200 |
+| DELETE | `/api/patients/:id` | Delete patient | 204 |
+| GET / POST | `/api/doctors` | List / create doctors | 200 / 201 |
+| GET / PUT / PATCH / DELETE | `/api/doctors/:id` | Same as patients | 200 / 204 |
+| GET | `/api/doctors/:id/stats` | Doctor statistics (C.4) | 200 |
+| POST | `/api/appointments` | Book an appointment (C.2) | 201 + `Location` |
+| GET | `/api/appointments/:id` | View an appointment (includes refund once cancelled) | 200 |
+| DELETE | `/api/appointments/:id` | Cancel an appointment (C.3) | 200 + refund |
+| GET | `/api/reports/doctors` | Doctors report (C.5) | 200 |
+| GET | `/api/reports/busy-days` | Busy days report (C.6) | 200 |
+
+**Bodies**
+- Patient: `{ "full_name", "email", "phone" }`
+- Doctor: `{ "full_name", "specialty", "consultation_fee", "room" }`
+- Booking: `{ "patient_id": 1, "doctor_id": 2, "appt_datetime": "2026-12-01 09:30" }`
+
+### Status codes
+
+| Code | When |
+|---|---|
+| 400 | Malformed input: invalid JSON, missing or ill-typed fields, unknown fields, non-numeric id, unparseable or impossible date (e.g. `2026-02-30`) |
+| 404 | Patient, doctor, appointment or route does not exist |
+| 409 | Conflicts with current state: slot already booked, doctor's day full (12/12), patient already booked at that time, duplicate email, appointment already cancelled, deleting a patient or doctor who has appointments |
+| 422 | Well-formed but breaks a booking rule: in the past, outside 09:00–17:00, not on a :00/:30 boundary, cancelling an appointment that has already started |
+
+Errors always look like `{ "error": "...", "details": ... }` and are produced by one
+central middleware (`src/middleware/errorHandler.js`), which also maps MySQL errors
+(`ER_DUP_ENTRY`, `ER_ROW_IS_REFERENCED_2`) to 409.
+
+### Justifications
+
+**Grouping.** There is one router and one controller per resource (`patients`, `doctors`,
+`appointments`) plus `reports` for admin read-only aggregates. Stats belong to a single
+doctor, so they are a sub-resource (`/doctors/:id/stats`). The reports cover all doctors,
+so they live under `/reports`.
+
+**PUT vs PATCH.** PUT replaces the whole resource, so every field is required. PATCH
+updates only the fields sent. Unknown fields are rejected with 400 so a typo like
+`fullname` can't silently do nothing.
+
+**Cancel = `DELETE /appointments/:id`.** From the client's point of view, cancelling
+removes the booking, and the brief says appointments get their delete behaviour from
+cancellation. On the server it is a *soft* delete: the row is kept with
+`status = 'CANCELLED'`, `cancelled_at` and `refund_amount` for refund history. It returns
+200 with the refund in the body, not 204, because the client needs to see the refund.
+
+**Deleting patients/doctors with appointments → 409.** The foreign keys are `RESTRICT`.
+Deleting a record with appointments would destroy booking and refund history, so the
+server refuses instead of cascading.
+
+**Booking rules (C.2).**
+- *Future, working hours, 30-minute boundary.* `validateSlot()` in
+  `src/utils/scheduling.js` is a pure function. The last valid slot is **16:30**, because a
+  30-minute appointment must end by 17:00, so 17:00 itself is rejected.
+- *Max 12 per day* and *no double-booked slot, even with simultaneous requests.* The
+  booking runs in one transaction that first takes row locks with `SELECT ... FOR UPDATE`:
+  the patient row first, then the doctor row, always in that order so two bookings can't
+  deadlock. All bookings for a doctor therefore queue on that doctor's lock, so the
+  "slot free?" and "fewer than 12 today?" checks can't go stale before the insert. As a
+  final database-level guarantee, the `UNIQUE (doctor_id, appt_datetime, active_slot)` key
+  rejects a second active booking of the same slot. Any `ER_DUP_ENTRY` becomes a 409.
+  This was tested with 10 parallel requests for one slot (1 × 201, 9 × 409) and 16
+  parallel requests for one doctor-day (12 × 201, 4 × 409).
+- `amount_paid` is set by the server from the doctor's `consultation_fee`, never by the
+  client.
+
+**Cancellation & refunds (C.3).**
+- Refund policy (`calculateRefund()` in `src/utils/scheduling.js`, computed in integer cents):
+
+  | Notice before appointment | Refund |
+  |---|---|
+  | more than 48 h | 100% |
+  | 24 h to 48 h **inclusive** (exactly 48 h → 50%, exactly 24 h → 50%) | 50% |
+  | less than 24 h | 0% |
+
+- The appointment row is locked, the refund is computed, and the status, cancellation
+  time and refund are written in a single `UPDATE` inside one transaction. The
+  cancellation and its refund record therefore succeed or fail together, and two
+  simultaneous cancels can't both succeed (the second gets 409).
+- When the status changes to `CANCELLED`, the generated column `active_slot` becomes `NULL`.
+  Unique indexes ignore `NULL`s, so the slot becomes bookable again while the cancelled
+  row stays for history.
+
+**Revenue definition.** "Revenue collected" = `SUM(amount_paid - COALESCE(refund_amount, 0))`
+over all of a doctor's appointments. Money paid and then refunded is not revenue, but
+the part kept from a late cancellation is.
+
+**Advanced SQL (C.4–C.6), all in `src/models/`.**
+- *Doctors report*: `doctors LEFT JOIN appointments` with `COUNT`/`SUM` and `COALESCE`,
+  so doctors with no appointments appear with `0` and `0.00`.
+- *Busy days*: a CTE groups `BOOKED` appointments by `(doctor_id, DATE(appt_datetime))` and
+  keeps groups with `HAVING COUNT(*) > 12 * 80 / 100`, i.e. 10 or more of 12. It is then
+  joined to `doctors`.
+- *Doctor stats*: a `WITH RECURSIVE` calendar of today + 6 days, `LEFT JOIN`ed to
+  appointments, so days with no bookings still appear as `0`. Utilization is computed in
+  SQL as booked / (days × 12) × 100.
+
+**SQL safety.** Every query uses `?` placeholders via `mysql2`'s `execute()`. The only
+dynamic SQL is the `SET` column list in partial updates, and those column names come
+from a hard-coded whitelist, never from request input. `multipleStatements` is off.
