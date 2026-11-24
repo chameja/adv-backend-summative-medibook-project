@@ -244,3 +244,36 @@ the part kept from a late cancellation is.
 **SQL safety.** Every query uses `?` placeholders via `mysql2`'s `execute()`. The only
 dynamic SQL is the `SET` column list in partial updates, and those column names come
 from a hard-coded whitelist, never from request input. `multipleStatements` is off.
+
+---
+
+## Part D — Audit Log & Justifications
+
+Every successful booking and cancellation is appended to `logs/audit.log` as one JSON line
+by `src/utils/auditLogger.js`. Set `AUDIT_LOG_FILE` in `.env` to use a different path.
+
+```json
+{"timestamp":"2026-11-24T12:56:56.428Z","event":"APPOINTMENT_BOOKED","appointment_id":31,"appt_ref":"AP-031","patient_id":1,"doctor_id":4,"appt_datetime":"2026-12-02 09:00:00","amount_paid":"300.00"}
+{"timestamp":"2026-11-24T12:56:56.467Z","event":"APPOINTMENT_CANCELLED","appointment_id":31,"appt_ref":"AP-031","patient_id":1,"doctor_id":4,"appt_datetime":"2026-12-02 09:00:00","amount_paid":"300.00","refund_percentage":100,"refund_amount":"300.00"}
+```
+
+**Async and non-blocking.** The logger uses `fs/promises` (`appendFile`, `mkdir`), and there
+are no `*Sync` calls anywhere in `src/`. Controllers call `logAudit()` without `await`, so the
+response goes out without waiting for the disk.
+
+**Creates `logs/` on first run.** It tries to append first. If that fails with `ENOENT`, it
+runs `mkdir(..., { recursive: true })` and retries. This creates the folder on first run, and
+again if someone deletes it while the server is running, without checking on every write.
+
+**A logging failure never fails the request.** `logAudit()` catches every error and writes a
+warning to the console instead of throwing. It also runs only *after* the booking or
+cancellation transaction has committed, so a log entry is never written for something that
+was rolled back. Tested with a read-only log directory: the booking still returned 201.
+
+**Lines stay whole and in order.** Writes go through a promise chain, one after another, so
+entries never interleave and appear in the order the events happened. Tested with 12
+simultaneous bookings: 12 intact JSON lines.
+
+**What is logged.** The log holds ids, the appointment reference, time, amounts and refund.
+It deliberately leaves out patient names, emails and phone numbers, so the log file doesn't
+become a second copy of personal data.

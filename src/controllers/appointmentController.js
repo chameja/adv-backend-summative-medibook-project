@@ -4,6 +4,7 @@ const doctorModel = require('../models/doctorModel');
 const { withTransaction } = require('../models/transaction');
 const AppError = require('../utils/AppError');
 const { parseId } = require('../utils/validators');
+const { logAudit } = require('../utils/auditLogger');
 const {
   MAX_APPOINTMENTS_PER_DAY,
   validateSlot,
@@ -75,6 +76,14 @@ async function book(req, res) {
   });
 
   const appointment = await appointmentModel.findById(appointmentId);
+  logAudit('APPOINTMENT_BOOKED', {
+    appointment_id: appointment.appointment_id,
+    appt_ref: appointment.appt_ref,
+    patient_id: appointment.patient_id,
+    doctor_id: appointment.doctor_id,
+    appt_datetime: appointment.appt_datetime,
+    amount_paid: appointment.amount_paid,
+  });
   res.status(201).location(`/api/appointments/${appointmentId}`).json(appointment);
 }
 
@@ -100,6 +109,16 @@ async function cancel(req, res) {
     return { appt, refund };
   });
 
+  logAudit('APPOINTMENT_CANCELLED', {
+    appointment_id: id,
+    appt_ref: outcome.appt.appt_ref,
+    patient_id: outcome.appt.patient_id,
+    doctor_id: outcome.appt.doctor_id,
+    appt_datetime: outcome.appt.appt_datetime,
+    amount_paid: outcome.appt.amount_paid,
+    refund_percentage: outcome.refund.percentage,
+    refund_amount: outcome.refund.refundAmount,
+  });
   res.json({
     message: 'Appointment cancelled',
     appointment_id: id,
