@@ -32,6 +32,13 @@ function parseDateTime(value) {
   };
 }
 
+// Parses a "YYYY-MM-DD" calendar day and returns it, or null if invalid.
+function parseDay(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = parseDateTime(`${value} 00:00`);
+  return parsed ? parsed.day : null;
+}
+
 // Checks a requested time is in the future, within 09:00-17:00 and on a 30-minute boundary.
 function validateSlot(value, now = new Date()) {
   const slot = parseDateTime(value);
@@ -88,6 +95,7 @@ module.exports = {
   SLOT_MINUTES,
   MAX_APPOINTMENTS_PER_DAY,
   parseDateTime,
+  parseDay,
   validateSlot,
   refundPercentage,
   calculateRefund,

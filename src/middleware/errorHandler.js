@@ -1,5 +1,14 @@
 const AppError = require('../utils/AppError');
 
+const {
+  ClientClosedError,
+  ClientOfflineError,
+  ConnectionTimeoutError,
+  SocketClosedUnexpectedlyError,
+} = require('redis');
+
+const REDIS_UNAVAILABLE = [ClientClosedError, ClientOfflineError, ConnectionTimeoutError, SocketClosedUnexpectedlyError];
+
 // Returns 404 for routes that do not exist.
 function notFound(req, res, next) {
   next(new AppError(404, `Route ${req.method} ${req.originalUrl} not found`));
@@ -35,15 +44,18 @@ function errorHandler(err, req, res, next) {
 
   if (err.type === 'entity.parse.failed') {
     error = new AppError(400, 'Request body is not valid JSON');
+  } else if (REDIS_UNAVAILABLE.some((type) => err instanceof type)) {
+    error = new AppError(503, 'Waitlist service is temporarily unavailable, please try again');
   } else if (!(err instanceof AppError)) {
     error = fromMysql(err) || err;
   }
 
   const status = error instanceof AppError ? error.status : 500;
-  if (status >= 500) console.error(err);
 
-  const body = { error: status >= 500 ? 'Internal server error' : error.message };
-  if (error.details !== undefined && status < 500) body.details = error.details;
+  const known = error instanceof AppError;
+  if (!known) console.error(err);
+  const body = { error: known ? error.message : 'Internal server error' };
+  if (known && error.details !== undefined) body.details = error.details;
   res.status(status).json(body);
 }
 
