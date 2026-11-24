@@ -1,4 +1,3 @@
-// Booking and cancellation business logic (Part C.2 and C.3).
 const appointmentModel = require('../models/appointmentModel');
 const patientModel = require('../models/patientModel');
 const doctorModel = require('../models/doctorModel');
@@ -15,25 +14,14 @@ const {
 
 const BOOKING_FIELDS = ['patient_id', 'doctor_id', 'appt_datetime'];
 
+// Returns one appointment or 404.
 async function getOne(req, res) {
   const appointment = await appointmentModel.findById(parseId(req.params.id));
   if (!appointment) throw new AppError(404, 'Appointment not found');
   res.json(appointment);
 }
 
-/**
- * POST /api/appointments
- * 400 malformed input · 404 unknown patient/doctor · 422 time breaks a booking rule
- * 409 slot taken / doctor's day full / patient already booked at that time
- *
- * Concurrency: inside one transaction we lock the patient row, then the doctor row
- * (always in that order, so two bookings cannot deadlock each other). Every booking
- * for a doctor waits for that doctor's lock, so the "12 per day" count and the
- * "slot free" check cannot go stale before the new row is written. The UNIQUE key
- * uq_doctor_slot(doctor_id, appt_datetime, active_slot) is the database-level backstop:
- * even if application checks were bypassed, a second insert fails with ER_DUP_ENTRY
- * and the error handler turns it into a 409.
- */
+// Validates and books an appointment, enforcing the slot, daily-cap and double-booking rules.
 async function book(req, res) {
   const body = req.body;
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
@@ -90,13 +78,7 @@ async function book(req, res) {
   res.status(201).location(`/api/appointments/${appointmentId}`).json(appointment);
 }
 
-/**
- * DELETE /api/appointments/:id — cancels the appointment.
- * The row is kept (status CANCELLED + refund_amount) for refund history; only the
- * slot is released. Lock + refund calculation + status change run in one transaction, so
- * the cancellation and its refund are recorded together or not at all, and two
- * simultaneous cancel requests cannot both succeed.
- */
+// Cancels an appointment, calculates its refund and keeps the record for history.
 async function cancel(req, res) {
   const id = parseId(req.params.id);
   const now = new Date();

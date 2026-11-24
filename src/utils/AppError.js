@@ -1,5 +1,4 @@
-// An error that carries an HTTP status code. Thrown by controllers/validators
-// and turned into a JSON response by the central error handler.
+// Error with an HTTP status code, turned into a JSON response by the error handler.
 class AppError extends Error {
   constructor(status, message, details) {
     super(message);

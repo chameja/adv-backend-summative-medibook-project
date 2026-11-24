@@ -1,15 +1,12 @@
-// Pure input validators for request bodies and URL params.
-// Each returns a list of error messages (empty = valid) so all problems are
-// reported in one 400 response rather than one at a time.
-
 const AppError = require('./AppError');
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_PATTERN = /^\+?[0-9][0-9\s-]{5,18}[0-9]$/;
-const MONEY_PATTERN = /^\d{1,6}(\.\d{1,2})?$/; // fits DECIMAL(8,2)
+const MONEY_PATTERN = /^\d{1,6}(\.\d{1,2})?$/;
 
 const isNonEmptyString = (v) => typeof v === 'string' && v.trim().length > 0;
 
+// Adds an error if the field is missing, empty or too long.
 function checkString(errors, body, field, maxLength) {
   const value = body[field];
   if (!isNonEmptyString(value)) {
@@ -19,7 +16,6 @@ function checkString(errors, body, field, maxLength) {
   }
 }
 
-// Field rules shared by create (all required) and partial update (only those sent).
 const PATIENT_RULES = {
   full_name: (errors, body) => checkString(errors, body, 'full_name', 100),
   email: (errors, body) => {
@@ -53,13 +49,7 @@ const DOCTOR_RULES = {
   },
 };
 
-/**
- * Validate a body against a rule set.
- *   partial = false -> every field is required (POST / PUT)
- *   partial = true  -> only fields present are checked, at least one required (PATCH)
- * Unknown fields are rejected so typos don't silently do nothing.
- * Returns { errors, values } where values holds the trimmed, whitelisted fields.
- */
+// Validates a request body against a set of field rules and returns errors and cleaned values.
 function validateBody(rules, body, { partial = false } = {}) {
   const errors = [];
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
@@ -90,10 +80,12 @@ function validateBody(rules, body, { partial = false } = {}) {
   return { errors, values };
 }
 
+// Validates a patient request body.
 const validatePatient = (body, opts) => validateBody(PATIENT_RULES, body, opts);
+// Validates a doctor request body.
 const validateDoctor = (body, opts) => validateBody(DOCTOR_RULES, body, opts);
 
-/** Parse a positive integer id (URL param or body field) or throw a 400. */
+// Parses a positive integer id or throws a 400 error.
 function parseId(value, name = 'id') {
   const str = typeof value === 'number' ? String(value) : value;
   if (typeof str !== 'string' || !/^[1-9]\d{0,9}$/.test(str) || Number(str) > 2147483647) {

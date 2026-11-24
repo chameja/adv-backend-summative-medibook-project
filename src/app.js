@@ -1,5 +1,4 @@
-// Express application: middleware + route mounting. No app.listen() here so the
-// app can be imported by tests without opening a port.
+// Express app: registers middleware, API routes and the error handler.
 const express = require('express');
 
 const patientRoutes = require('./routes/patientRoutes');

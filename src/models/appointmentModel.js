@@ -1,5 +1,3 @@
-// All SQL for the `appointments` table. Functions that take `conn` must be called
-// inside withTransaction() so their row locks and writes are part of one transaction.
 const pool = require('../config/db');
 
 const SELECT_DETAILED = `
@@ -11,12 +9,13 @@ const SELECT_DETAILED = `
   JOIN patients p ON p.patient_id = a.patient_id
   JOIN doctors  d ON d.doctor_id  = a.doctor_id`;
 
+// Returns one appointment with patient and doctor details, or null.
 async function findById(id, conn = pool) {
   const [rows] = await conn.execute(`${SELECT_DETAILED} WHERE a.appointment_id = ?`, [id]);
   return rows[0] || null;
 }
 
-/** Number of BOOKED appointments the doctor has on a calendar day ('YYYY-MM-DD'). */
+// Counts the booked appointments a doctor has on a given day.
 async function countActiveForDoctorOnDay(conn, doctorId, day) {
   const [[row]] = await conn.execute(
     `SELECT COUNT(*) AS total
@@ -30,7 +29,7 @@ async function countActiveForDoctorOnDay(conn, doctorId, day) {
   return Number(row.total);
 }
 
-/** Is this exact doctor slot already held by a BOOKED appointment? */
+// Returns whether the doctor already has a booked appointment at this time.
 async function isSlotTaken(conn, doctorId, datetime) {
   const [rows] = await conn.execute(
     `SELECT 1 FROM appointments
@@ -41,7 +40,7 @@ async function isSlotTaken(conn, doctorId, datetime) {
   return rows.length > 0;
 }
 
-/** Does the patient already hold a BOOKED appointment (with any doctor) at this time? */
+// Returns whether the patient already has a booked appointment at this time.
 async function patientHasAppointmentAt(conn, patientId, datetime) {
   const [rows] = await conn.execute(
     `SELECT 1 FROM appointments
@@ -52,12 +51,7 @@ async function patientHasAppointmentAt(conn, patientId, datetime) {
   return rows.length > 0;
 }
 
-/**
- * Insert a BOOKED appointment and give it its public reference (AP-<id>, zero-padded).
- * The ref depends on the AUTO_INCREMENT id, so we insert with a unique temporary ref
- * and replace it in the same transaction. The uq_doctor_slot UNIQUE key is the final
- * guarantee against two bookings of one slot: a duplicate raises ER_DUP_ENTRY.
- */
+// Inserts a booked appointment, sets its AP-xxx reference and returns its id.
 async function insertBooked(conn, { patientId, doctorId, datetime, amountPaid }) {
   const tempRef = `T${Date.now().toString(36).slice(-5)}${Math.random().toString(36).slice(2, 6)}`;
   const [result] = await conn.execute(
@@ -73,7 +67,7 @@ async function insertBooked(conn, { patientId, doctorId, datetime, amountPaid })
   return result.insertId;
 }
 
-/** Lock an appointment row so two cancellations of it cannot run at the same time. */
+// Returns one appointment by id and locks the row until the transaction ends.
 async function lockById(conn, id) {
   const [rows] = await conn.execute(
     `SELECT appointment_id, appt_ref, patient_id, doctor_id, appt_datetime,
@@ -84,12 +78,7 @@ async function lockById(conn, id) {
   return rows[0] || null;
 }
 
-/**
- * Mark an appointment cancelled and record its refund in one UPDATE (one row, one
- * statement, inside the caller's transaction). Setting status = 'CANCELLED' turns the
- * generated active_slot column to NULL, which frees the slot in uq_doctor_slot while
- * the row stays for refund history.
- */
+// Marks an appointment as cancelled and records its refund.
 async function markCancelled(conn, id, refundAmount, cancelledAt) {
   const [result] = await conn.execute(
     `UPDATE appointments

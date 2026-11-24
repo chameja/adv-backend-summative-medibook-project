@@ -1,21 +1,13 @@
-// Pure scheduling rules — no DB, no Express — so they can be unit-tested (Part F).
-
-const OPENING_MINUTES = 9 * 60; // 09:00
-const CLOSING_MINUTES = 17 * 60; // 17:00 — the last slot starts at 16:30
+const OPENING_MINUTES = 9 * 60;
+const CLOSING_MINUTES = 17 * 60;
 const SLOT_MINUTES = 30;
 const MAX_APPOINTMENTS_PER_DAY = 12;
 
-// Accepts "YYYY-MM-DD HH:MM", "YYYY-MM-DDTHH:MM" and an optional ":SS".
-// No timezone suffix is allowed: times are clinic-local wall-clock times.
 const DATETIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/;
 
 const pad = (n) => String(n).padStart(2, '0');
 
-/**
- * Parse a clinic-local datetime string.
- * Returns { date: Date, sql: 'YYYY-MM-DD HH:MM:SS', day: 'YYYY-MM-DD', minutes, seconds }
- * or null when the string is malformed or not a real calendar date/time.
- */
+// Parses a "YYYY-MM-DD HH:MM" string into a Date and SQL datetime, or returns null if invalid.
 function parseDateTime(value) {
   if (typeof value !== 'string') return null;
   const m = DATETIME_PATTERN.exec(value.trim());
@@ -26,7 +18,6 @@ function parseDateTime(value) {
   if (hour > 23 || minute > 59 || second > 59) return null;
 
   const date = new Date(year, month - 1, day, hour, minute, second);
-  // Rejects impossible dates such as 2026-02-30 (JS would roll them over).
   if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
     return null;
   }
@@ -41,12 +32,7 @@ function parseDateTime(value) {
   };
 }
 
-/**
- * Check that a requested appointment time is bookable.
- * Returns { ok: true, slot } or { ok: false, reason, message }.
- *   reason 'MALFORMED'    -> caller should answer 400
- *   any other reason      -> well-formed but breaks a business rule (422)
- */
+// Checks a requested time is in the future, within 09:00-17:00 and on a 30-minute boundary.
 function validateSlot(value, now = new Date()) {
   const slot = parseDateTime(value);
   if (!slot) {
@@ -76,19 +62,14 @@ function validateSlot(value, now = new Date()) {
   return { ok: true, slot };
 }
 
-/**
- * Refund policy (documented in README):
- *   notice  > 48h        -> 100%
- *   24h <= notice <= 48h -> 50%   (exactly 48h and exactly 24h both get 50%)
- *   notice  < 24h        -> 0%
- * Amounts are handled in integer cents to avoid floating-point drift.
- */
+// Returns the refund percentage for the hours of notice: >48h 100%, 24-48h 50%, <24h 0%.
 function refundPercentage(hoursNotice) {
   if (hoursNotice > 48) return 100;
   if (hoursNotice >= 24) return 50;
   return 0;
 }
 
+// Computes the refund amount for a cancellation from the amount paid and the notice given.
 function calculateRefund(amountPaid, appointmentDate, cancelledAt = new Date()) {
   const hoursNotice = (appointmentDate.getTime() - cancelledAt.getTime()) / (60 * 60 * 1000);
   const percentage = refundPercentage(hoursNotice);
@@ -112,7 +93,7 @@ module.exports = {
   calculateRefund,
 };
 
-/** Format a JS Date as a clinic-local MySQL DATETIME string. */
+// Formats a Date as a MySQL DATETIME string in local time.
 function toSqlDateTime(date) {
   return (
     `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +

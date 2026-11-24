@@ -3,20 +3,24 @@ const AppError = require('../utils/AppError');
 const { validateDoctor, parseId } = require('../utils/validators');
 const { MAX_APPOINTMENTS_PER_DAY } = require('../utils/scheduling');
 
+// Throws a 400 error if validation found any problems.
 function assertValid({ errors }) {
   if (errors.length) throw new AppError(400, 'Validation failed', errors);
 }
 
+// Lists all doctors.
 async function list(req, res) {
   res.json(await doctorModel.findAll());
 }
 
+// Returns one doctor or 404.
 async function getOne(req, res) {
   const doctor = await doctorModel.findById(parseId(req.params.id));
   if (!doctor) throw new AppError(404, 'Doctor not found');
   res.json(doctor);
 }
 
+// Creates a doctor and returns 201.
 async function create(req, res) {
   const result = validateDoctor(req.body);
   assertValid(result);
@@ -24,6 +28,7 @@ async function create(req, res) {
   res.status(201).location(`/api/doctors/${doctor.doctor_id}`).json(doctor);
 }
 
+// Builds a handler for PUT (full replace) or PATCH (partial update) of a doctor.
 function update({ partial }) {
   return async (req, res) => {
     const id = parseId(req.params.id);
@@ -35,12 +40,14 @@ function update({ partial }) {
   };
 }
 
+// Deletes a doctor and returns 204.
 async function remove(req, res) {
   const deleted = await doctorModel.remove(parseId(req.params.id));
   if (!deleted) throw new AppError(404, 'Doctor not found');
   res.status(204).end();
 }
 
+// Returns statistics for one doctor.
 async function stats(req, res) {
   const id = parseId(req.params.id);
   const doctor = await doctorModel.findById(id);

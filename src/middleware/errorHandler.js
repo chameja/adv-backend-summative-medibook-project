@@ -1,12 +1,11 @@
-// Central error handling: every error thrown in a route ends up here.
-// Express 5 forwards rejected promises from async handlers automatically.
 const AppError = require('../utils/AppError');
 
+// Returns 404 for routes that do not exist.
 function notFound(req, res, next) {
   next(new AppError(404, `Route ${req.method} ${req.originalUrl} not found`));
 }
 
-// Translate known MySQL errors into client-facing status codes.
+// Converts known MySQL errors into AppErrors with the right status code.
 function fromMysql(err) {
   switch (err.code) {
     case 'ER_DUP_ENTRY':
@@ -30,7 +29,7 @@ function fromMysql(err) {
   }
 }
 
-// eslint-disable-next-line no-unused-vars
+// Sends every error as a JSON response with the right status code.
 function errorHandler(err, req, res, next) {
   let error = err;
 

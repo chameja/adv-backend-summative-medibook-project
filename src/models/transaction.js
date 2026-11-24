@@ -1,9 +1,6 @@
-// Runs `work(conn)` inside a MySQL transaction on a dedicated pooled connection.
-// Commits if `work` resolves, rolls back if it throws, always releases the connection.
-// Controllers use this to group several model calls atomically; they only pass the
-// connection handle through to model functions and never run SQL on it themselves.
 const pool = require('../config/db');
 
+// Runs the given function inside a MySQL transaction, committing on success and rolling back on error.
 async function withTransaction(work) {
   const conn = await pool.getConnection();
   try {

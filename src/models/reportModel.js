@@ -1,14 +1,6 @@
-// Admin reports (Part C.5 and C.6). Results are produced entirely in SQL.
 const pool = require('../config/db');
 
-/**
- * Every doctor's total appointments and revenue collected, including doctors with
- * no appointments (LEFT JOIN + COALESCE turns their NULL aggregates into 0).
- *   total_appointments     all appointments ever made, booked or cancelled
- *   active_appointments    those still BOOKED
- *   cancelled_appointments those CANCELLED
- *   revenue_collected      amount paid minus refunds given
- */
+// Returns every doctor's appointment totals and revenue, including doctors with none.
 async function doctorsReport() {
   const [rows] = await pool.execute(
     `SELECT
@@ -27,10 +19,7 @@ async function doctorsReport() {
   return rows;
 }
 
-/**
- * Every (doctor, date) where BOOKED appointments exceed `thresholdPct`% of the daily
- * cap: with a cap of 12 and 80%, that means more than 9.6, i.e. 10 or more.
- */
+// Returns every doctor and date where bookings exceed the given percentage of daily capacity.
 async function busyDaysReport(dailyCap, thresholdPct) {
   const [rows] = await pool.execute(
     `WITH daily_load AS (
