@@ -277,3 +277,100 @@ simultaneous bookings: 12 intact JSON lines.
 **What is logged.** The log holds ids, the appointment reference, time, amounts and refund.
 It deliberately leaves out patient names, emails and phone numbers, so the log file doesn't
 become a second copy of personal data.
+
+---
+
+## Part E — Waitlist, Background Jobs & Justifications
+
+### Running it
+
+Redis must be running (set `REDIS_URL` in `.env`, default `redis://localhost:6379`), e.g.
+`docker run -d --name medibook-redis -p 6379:6379 redis:7-alpine`. The worker is a separate
+process from the web server:
+
+```bash
+npm start          # terminal 1: web server
+npm run worker     # terminal 2: background worker
+```
+
+Both exit with a clear message if MySQL or Redis can't be reached at startup. Once running,
+they reconnect to Redis on their own after an outage.
+
+### Waitlist endpoints
+
+| Method | Path | Purpose | Success |
+|---|---|---|---|
+| POST | `/api/doctors/:id/waitlist/:date` | Join, body `{ "patient_id": 3 }` | 201 + position |
+| GET | `/api/doctors/:id/waitlist/:date` | View the queue in order | 200 |
+| DELETE | `/api/doctors/:id/waitlist/:date/:patientId` | Leave the queue | 204 |
+
+When a booking fails because the slot is taken or the doctor's day is full (409
+`SLOT_TAKEN` / `DOCTOR_DAY_FULL`), the error response includes a `waitlist` object with the
+exact request needed to join. Joining returns 409 if the patient is already on that waitlist
+or already has an appointment with that doctor that day, 422 for a past date, and 503 if
+Redis is down. Bookings and cancellations still work while Redis is down.
+
+### How it works
+
+| Redis key | Type | Holds |
+|---|---|---|
+| `medibook:waitlist:<doctorId>:<YYYY-MM-DD>` | list | patient ids, first in line on the left; expires the day after |
+| `medibook:jobs` | list | jobs waiting to run |
+| `medibook:jobs:processing` | list | jobs a worker has taken but not finished |
+| `medibook:jobs:failed` | list | jobs that failed permanently (dead-letter) |
+
+There are two job types:
+- `SEND_CONFIRMATION` is queued after **every** confirmed booking, both API bookings and
+  waitlist promotions. The worker writes the message to the audit log as `NOTIFICATION_SENT`.
+- `SLOT_FREED` is queued after every cancellation. The worker books the first suitable
+  waitlisted patient into the freed slot.
+
+### Justifications
+
+**One waitlist per doctor per day.** The brief offers a waitlist when the slot *or the
+whole day* is full. A single list per doctor-day means any slot freed that day goes to whoever
+has waited longest (first in, first out). Putting the doctor and date in the key keeps each
+list small. `EXPIREAT` deletes it automatically after that day, so old waitlists don't pile up.
+
+**Joining is atomic.** A small Lua script checks `LPOS` (already on the list?) and runs
+`RPUSH` as one step. Two simultaneous join requests from the same patient can't both get in.
+
+**Reliable job queue.** The worker takes jobs with `BLMOVE jobs → processing`, which is
+atomic, and removes a job from `processing` only after it has finished. If the worker crashes
+mid-job, the job is still in `processing`, and the next worker start moves it back to the
+front of the queue. A job that throws is retried with a growing delay (1 s, 2 s, ...). After 5
+attempts it moves to `jobs:failed` and is logged as `JOB_FAILED`, so it is never silently
+dropped. Jobs that are malformed or of an unknown type go straight to the failed list.
+
+**If a promoted booking fails, the patient doesn't vanish.** The worker *reads* the
+waitlist and leaves the patient on it until their booking has **committed** in MySQL. It does
+not pop them first and hope the booking works. The booking goes through the same `bookSlot()`
+function as the API, with the same row locks and rules. Possible outcomes:
+
+| Outcome of booking the patient | What happens to them |
+|---|---|
+| Success | Removed from the waitlist, `WAITLIST_PROMOTED` logged, confirmation queued |
+| Slot taken again / day full / slot now in the past | Stay first in line; the job ends (`WAITLIST_SLOT_UNAVAILABLE`) |
+| Patient already booked elsewhere at that time | Stay on the list; the next patient is tried (`WAITLIST_SKIPPED`) |
+| Patient was deleted, or already has an appointment with this doctor that day | Removed (`WAITLIST_REMOVED`) and the next patient is tried |
+| Database/Redis error | Stay on the list; the job is retried |
+
+The "already has an appointment with this doctor that day" check makes promotion safe to
+retry. Suppose the booking commits but the worker crashes before removing the patient: on the
+retry they're recognised as already booked and removed, rather than getting a second
+appointment. This was tested by holding a MySQL lock so the first promotion attempt timed
+out: the patient stayed first in line, and the retry booked them.
+
+**Queueing never undoes a booking or cancellation.** Jobs are queued *after* the MySQL
+transaction commits, and `enqueue()` never throws. If Redis is down, the booking or
+cancellation still succeeds, the response reports `"waitlist_notified": false`, and a
+`JOB_ENQUEUE_FAILED` line is written to the audit log so staff can follow up. Without a
+separate "outbox" table, which the 3-table limit rules out, this is the trade-off chosen:
+the booking always stands, and missed notifications are visible in the log rather than lost
+silently.
+
+**Why Redis lists instead of Bull/BullMQ.** Every guarantee above comes from a few Redis
+commands (`BLMOVE`, `LREM`, `MULTI`, a 5-line Lua script) that can be explained line by line.
+A library would hide them. The cost is building retries and the dead-letter list by hand,
+and running a single worker: on startup, the worker requeues *everything* in `processing`,
+which is only safe when no other worker is mid-job.
