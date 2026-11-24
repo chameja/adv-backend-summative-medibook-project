@@ -21,13 +21,19 @@ async function appendLine(file, line) {
   }
 }
 
-// Queues an audit event as a JSON line; never throws, so logging cannot fail a request.
+// Queues an audit event as a JSON line and resolves to whether it was written; never throws.
 function logAudit(event, data = {}) {
   const line = `${JSON.stringify({ timestamp: new Date().toISOString(), event, ...data })}\n`;
   const file = logFilePath();
-  writeChain = writeChain
-    .then(() => appendLine(file, line))
-    .catch((err) => console.error(`Audit log write failed (${event}): ${err.message}`));
+  writeChain = writeChain.then(
+    () => appendLine(file, line).then(
+      () => true,
+      (err) => {
+        console.error(`Audit log write failed (${event}): ${err.message}`);
+        return false;
+      }
+    )
+  );
   return writeChain;
 }
 
