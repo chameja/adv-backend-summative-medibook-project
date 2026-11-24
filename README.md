@@ -131,6 +131,98 @@ Create a **simple HTML page** (served by your Express app at `GET /feedback`) co
 
 ---
 
+## Setup Instructions
+
+### Prerequisites
+
+| Tool | Version | Why |
+|---|---|---|
+| Node.js | 18 or newer | Required by Express 5 |
+| MySQL | 8.0 or newer | Recursive CTEs and generated columns used by the schema and reports |
+| Redis | 6.2 or newer | `BLMOVE` / `LMOVE` / `LPOS` used by the waitlist and job queue |
+
+### 1. Install dependencies
+
+```bash
+git clone https://github.com/chameja/adv-backend-summative-medibook-project.git
+cd adv-backend-summative-medibook-project
+npm install
+```
+
+### 2. Create the MySQL user and database
+
+Log in as an admin user (`sudo mysql` or `mysql -u root -p`) and create an application user:
+
+```sql
+CREATE USER 'medibook_user'@'localhost' IDENTIFIED BY 'choose_a_password';
+GRANT ALL PRIVILEGES ON medibook.* TO 'medibook_user'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+Then create the tables and load the sample data:
+
+```bash
+mysql -u medibook_user -p < database/schema.sql
+mysql -u medibook_user -p < database/seed.sql
+```
+
+> `schema.sql` drops and recreates the `medibook` database, so re-running it resets all data.
+> The seed uses dates relative to today, so upcoming appointments, stats and reports stay
+> meaningful whenever it is loaded.
+
+### 3. Start Redis
+
+Use any local Redis install (`sudo systemctl start redis-server` on Ubuntu), or Docker:
+
+```bash
+docker run -d --name medibook-redis -p 6379:6379 redis:7-alpine
+```
+
+### 4. Configure environment variables
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and set `DB_PASSWORD` to the password chosen in step 2. Check that
+`DB_NAME=medibook` and that `REDIS_URL` points at your Redis server. `.env` is git-ignored;
+never commit it.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `3000` | HTTP port of the web server |
+| `DB_HOST`, `DB_PORT` | `localhost`, `3306` | MySQL server |
+| `DB_USER`, `DB_PASSWORD` | — | MySQL credentials |
+| `DB_NAME` | `medibook` | Database created by `schema.sql` |
+| `DB_POOL_SIZE` | `10` | Maximum MySQL connections |
+| `REDIS_URL` | `redis://localhost:6379` | Redis server for the waitlist and job queue |
+| `AUDIT_LOG_FILE` | `logs/audit.log` | Optional: where the audit log is written |
+
+### 5. Run the app and the worker
+
+The web server and the background worker are separate processes; run each in its own terminal:
+
+```bash
+npm start          # web server  -> http://localhost:3000
+npm run worker     # worker      -> processes waitlist promotions and confirmations
+```
+
+Both check MySQL and Redis at startup and exit with a clear message if either is unreachable.
+`npm run dev` starts the web server with auto-reload on file changes.
+
+### 6. Check it works
+
+```bash
+curl http://localhost:3000/health                  # {"status":"ok"}
+curl http://localhost:3000/api/doctors             # the 4 seeded doctors
+curl http://localhost:3000/api/reports/busy-days   # Dr. Boateng and Dr. Adjei's busy days
+```
+
+Bookings, cancellations and confirmation messages are written to `logs/audit.log`, which is
+created automatically on first use.
+
+---
+
 ## Part C — API Reference & Design Justifications
 
 All endpoints are under `/api`, accept and return JSON, and use plural resource nouns.
