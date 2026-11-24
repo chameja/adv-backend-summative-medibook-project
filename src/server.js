@@ -5,9 +5,9 @@ const pool = require('./config/db');
 
 const PORT = Number(process.env.PORT) || 3000;
 
+// Checks the MySQL connection, then starts the HTTP server.
 async function start() {
   try {
-    // Fail fast with a clear message if MySQL is not reachable / not set up.
     await pool.query('SELECT 1');
   } catch (err) {
     console.error(`Cannot connect to MySQL: ${err.message}`);
