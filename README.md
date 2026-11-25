@@ -221,6 +221,14 @@ curl http://localhost:3000/api/reports/busy-days   # Dr. Boateng and Dr. Adjei's
 Bookings, cancellations and confirmation messages are written to `logs/audit.log`, which is
 created automatically on first use.
 
+### 7. Run the unit tests
+
+```bash
+npm test
+```
+
+The tests need no MySQL, Redis or `.env`: they only exercise pure functions.
+
 ---
 
 ## Part C — API Reference & Design Justifications
@@ -466,3 +474,39 @@ commands (`BLMOVE`, `LREM`, `MULTI`, a 5-line Lua script) that can be explained 
 A library would hide them. The cost is building retries and the dead-letter list by hand,
 and running a single worker: on startup, the worker requeues *everything* in `processing`,
 which is only safe when no other worker is mid-job.
+
+---
+
+## Part F — Unit Tests
+
+Run with `npm test` (Jest). Every test targets a **pure function**: no database, Redis,
+network or file system. They run anywhere in about a second, with nothing to set up. This is
+why the business rules live in `src/utils/` and not inside controllers or SQL.
+
+| File | Function(s) | What is covered |
+|---|---|---|
+| `tests/refund.test.js` | `calculateRefund`, `refundPercentage` | All three tiers, **both boundaries** (exactly 48 h and exactly 24 h), one minute either side of each boundary, refund based on the amount actually paid, cent rounding (`99.99` → `50.00`, `0.10` → `0.05`), DECIMAL strings from MySQL as well as numbers |
+| `tests/validateSlot.test.js` | `validateSlot`, `parseDay` | Valid slots, 16:30 as the last slot, **17:00 exactly** rejected, before opening, **09:15** and non-zero seconds off-boundary, past and "right now", **malformed dates** (impossible dates like `2026-02-30`, hour 24, minute 60, timezone suffix, missing time, `null`, numbers), leap years |
+| `tests/validators.test.js` | `parseId`, `validatePatient`, `validateDoctor` | Id parsing (`0`, negatives, decimals, `"12abc"`, leading zeros, INT overflow), trimming and email lower-casing, all errors reported at once, unknown fields, PUT vs PATCH rules, fee formats that fit `DECIMAL(8,2)` |
+
+### Documented boundary behaviour
+
+| Notice | Refund | Test |
+|---|---|---|
+| 48 h + 1 min | 100% | `one minute over 48 hours still refunds 100%` |
+| **exactly 48 h** | **50%** | `exactly 48 hours notice is in the 50% tier (boundary)` |
+| **exactly 24 h** | **50%** | `exactly 24 hours notice is still in the 50% tier (boundary)` |
+| 24 h − 1 min | 0% | `one minute under 24 hours refunds nothing` |
+
+The brief says "24–48 hours → 50%". Both ends of that range are read as **inclusive**: only
+notice *strictly more* than 48 h earns a full refund, and exactly 24 h still earns half.
+
+### Why the tests are reliable
+
+- **Fixed clock.** `validateSlot(value, now)` and `calculateRefund(amount, date, cancelledAt)`
+  take the current time as a parameter. Tests pass a fixed date, so they don't depend on
+  when they run, and "in the past" can be tested exactly.
+- **Exact boundaries.** Notice is built by subtracting exact milliseconds from the appointment
+  time. "Exactly 48 hours" is therefore exactly 48 h, not 47.9999 h.
+- **No floating-point money.** The refund is computed in integer cents, which the rounding
+  tests check.
