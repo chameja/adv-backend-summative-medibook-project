@@ -510,3 +510,56 @@ notice *strictly more* than 48 h earns a full refund, and exactly 24 h still ear
   time. "Exactly 48 hours" is therefore exactly 48 h, not 47.9999 h.
 - **No floating-point money.** The refund is computed in integer cents, which the rounding
   tests check.
+
+---
+
+## Part G — Course Feedback Page (i18n & l10n)
+
+Open <http://localhost:3000/feedback> (English) or <http://localhost:3000/feedback?lang=fr>
+(French). The page has the 5 essay questions, each with its own `<textarea>`, and links to
+switch language.
+
+| File | Role |
+|---|---|
+| `locales/en.json`, `locales/fr.json` | Every piece of text on the page: title, heading, instructions, the 5 questions, labels, button, thank-you message |
+| `src/utils/i18n.js` | Picks the locale, loads its messages, formats dates, escapes HTML |
+| `src/views/feedbackPage.js` | Builds the HTML from the messages (no text is hard-coded) |
+| `src/controllers/feedbackController.js`, `src/routes/feedbackRoutes.js` | `GET /feedback` shows the form; `POST /feedback` shows a translated thank-you page |
+
+### Behaviour
+
+| Request | Result |
+|---|---|
+| `/feedback` | English (the default) |
+| `/feedback?lang=fr`, `?lang=FR`, `?lang=fr-CA` | French: only the primary language tag is used, and case is ignored |
+| `/feedback?lang=de`, `?lang=xyz`, `?lang=__proto__` | English: unsupported values fall back instead of crashing |
+| `/feedback?lang=fr&lang=en` | French: the first value wins |
+
+**Localised date.** Today's date is formatted with `Intl.DateTimeFormat(locale, { dateStyle: 'full' })`.
+Each locale file names its own Intl locale (`en-GB`, `fr-FR`), so English shows
+"Wednesday, 25 November 2026" and French shows "mercredi 25 novembre 2026". The `<time datetime="…">`
+element also carries the machine-readable date.
+
+**Localisation beyond translation.** French typography puts a non-breaking space before a colon
+("Date du jour :"), so the label separator lives in the locale file, not the template. The page
+sets `<html lang="…">` and the `Content-Language` header, so screen readers pronounce the text
+correctly. The language links carry `hreflang`/`lang`, and the current language is marked with
+`aria-current`.
+
+### Justifications
+
+- **Why a whitelist of locales?** The locale files are loaded once at startup with `require`, so
+  no file is read during a request and there are no `*Sync` calls in handlers. `?lang=` is only
+  ever compared against the loaded locale codes (with `Object.hasOwn`, so `__proto__` or
+  `toString` can't match an inherited property). It is never used to build a file path, so there
+  is no path-traversal risk such as `?lang=../../.env`.
+- **Safe output.** All locale text is HTML-escaped before it goes into the page, so a
+  translation containing `<`, `&` or quotes can't break the markup.
+- **Adding a language** means adding `locales/<code>.json` with the same keys and one line in
+  `src/utils/i18n.js`. A unit test fails if the two locale files ever have different keys or
+  anything other than 5 questions.
+- **Submitted answers are not stored.** The brief asks for the form only, and there is no 4th
+  table to keep answers in. `POST /feedback` just confirms receipt in the chosen language.
+
+Tests for this part are in `tests/i18n.test.js`: locale fallback, matching keys, exactly 5
+questions, localised dates, rendering and escaping.
