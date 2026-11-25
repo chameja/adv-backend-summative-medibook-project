@@ -131,6 +131,106 @@ Create a **simple HTML page** (served by your Express app at `GET /feedback`) co
 
 ---
 
+## Setup Instructions
+
+### Prerequisites
+
+| Tool | Version | Why |
+|---|---|---|
+| Node.js | 18 or newer | Required by Express 5 |
+| MySQL | 8.0 or newer | Recursive CTEs and generated columns used by the schema and reports |
+| Redis | 6.2 or newer | `BLMOVE` / `LMOVE` / `LPOS` used by the waitlist and job queue |
+
+### 1. Install dependencies
+
+```bash
+git clone https://github.com/chameja/adv-backend-summative-medibook-project.git
+cd adv-backend-summative-medibook-project
+npm install
+```
+
+### 2. Create the MySQL user and database
+
+Log in as an admin user (`sudo mysql` or `mysql -u root -p`) and create an application user:
+
+```sql
+CREATE USER 'medibook_user'@'localhost' IDENTIFIED BY 'choose_a_password';
+GRANT ALL PRIVILEGES ON medibook.* TO 'medibook_user'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+Then create the tables and load the sample data:
+
+```bash
+mysql -u medibook_user -p < database/schema.sql
+mysql -u medibook_user -p < database/seed.sql
+```
+
+> `schema.sql` drops and recreates the `medibook` database, so re-running it resets all data.
+> The seed uses dates relative to today, so upcoming appointments, stats and reports stay
+> meaningful whenever it is loaded.
+
+### 3. Start Redis
+
+Use any local Redis install (`sudo systemctl start redis-server` on Ubuntu), or Docker:
+
+```bash
+docker run -d --name medibook-redis -p 6379:6379 redis:7-alpine
+```
+
+### 4. Configure environment variables
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and set `DB_PASSWORD` to the password chosen in step 2. Check that
+`DB_NAME=medibook` and that `REDIS_URL` points at your Redis server. `.env` is git-ignored;
+never commit it.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `3000` | HTTP port of the web server |
+| `DB_HOST`, `DB_PORT` | `localhost`, `3306` | MySQL server |
+| `DB_USER`, `DB_PASSWORD` | — | MySQL credentials |
+| `DB_NAME` | `medibook` | Database created by `schema.sql` |
+| `DB_POOL_SIZE` | `10` | Maximum MySQL connections |
+| `REDIS_URL` | `redis://localhost:6379` | Redis server for the waitlist and job queue |
+| `AUDIT_LOG_FILE` | `logs/audit.log` | Optional: where the audit log is written |
+
+### 5. Run the app and the worker
+
+The web server and the background worker are separate processes; run each in its own terminal:
+
+```bash
+npm start          # web server  -> http://localhost:3000
+npm run worker     # worker      -> processes waitlist promotions and confirmations
+```
+
+Both check MySQL and Redis at startup and exit with a clear message if either is unreachable.
+`npm run dev` starts the web server with auto-reload on file changes.
+
+### 6. Check it works
+
+```bash
+curl http://localhost:3000/health                  # {"status":"ok"}
+curl http://localhost:3000/api/doctors             # the 4 seeded doctors
+curl http://localhost:3000/api/reports/busy-days   # Dr. Boateng and Dr. Adjei's busy days
+```
+
+Bookings, cancellations and confirmation messages are written to `logs/audit.log`, which is
+created automatically on first use.
+
+### 7. Run the unit tests
+
+```bash
+npm test
+```
+
+The tests need no MySQL, Redis or `.env`: they only exercise pure functions.
+
+---
+
 ## Part C — API Reference & Design Justifications
 
 All endpoints are under `/api`, accept and return JSON, and use plural resource nouns.
@@ -277,3 +377,136 @@ simultaneous bookings: 12 intact JSON lines.
 **What is logged.** The log holds ids, the appointment reference, time, amounts and refund.
 It deliberately leaves out patient names, emails and phone numbers, so the log file doesn't
 become a second copy of personal data.
+
+---
+
+## Part E — Waitlist, Background Jobs & Justifications
+
+### Running it
+
+Redis must be running (set `REDIS_URL` in `.env`, default `redis://localhost:6379`), e.g.
+`docker run -d --name medibook-redis -p 6379:6379 redis:7-alpine`. The worker is a separate
+process from the web server:
+
+```bash
+npm start          # terminal 1: web server
+npm run worker     # terminal 2: background worker
+```
+
+Both exit with a clear message if MySQL or Redis can't be reached at startup. Once running,
+they reconnect to Redis on their own after an outage.
+
+### Waitlist endpoints
+
+| Method | Path | Purpose | Success |
+|---|---|---|---|
+| POST | `/api/doctors/:id/waitlist/:date` | Join, body `{ "patient_id": 3 }` | 201 + position |
+| GET | `/api/doctors/:id/waitlist/:date` | View the queue in order | 200 |
+| DELETE | `/api/doctors/:id/waitlist/:date/:patientId` | Leave the queue | 204 |
+
+When a booking fails because the slot is taken or the doctor's day is full (409
+`SLOT_TAKEN` / `DOCTOR_DAY_FULL`), the error response includes a `waitlist` object with the
+exact request needed to join. Joining returns 409 if the patient is already on that waitlist
+or already has an appointment with that doctor that day, 422 for a past date, and 503 if
+Redis is down. Bookings and cancellations still work while Redis is down.
+
+### How it works
+
+| Redis key | Type | Holds |
+|---|---|---|
+| `medibook:waitlist:<doctorId>:<YYYY-MM-DD>` | list | patient ids, first in line on the left; expires the day after |
+| `medibook:jobs` | list | jobs waiting to run |
+| `medibook:jobs:processing` | list | jobs a worker has taken but not finished |
+| `medibook:jobs:failed` | list | jobs that failed permanently (dead-letter) |
+
+There are two job types:
+- `SEND_CONFIRMATION` is queued after **every** confirmed booking, both API bookings and
+  waitlist promotions. The worker writes the message to the audit log as `NOTIFICATION_SENT`.
+- `SLOT_FREED` is queued after every cancellation. The worker books the first suitable
+  waitlisted patient into the freed slot.
+
+### Justifications
+
+**One waitlist per doctor per day.** The brief offers a waitlist when the slot *or the
+whole day* is full. A single list per doctor-day means any slot freed that day goes to whoever
+has waited longest (first in, first out). Putting the doctor and date in the key keeps each
+list small. `EXPIREAT` deletes it automatically after that day, so old waitlists don't pile up.
+
+**Joining is atomic.** A small Lua script checks `LPOS` (already on the list?) and runs
+`RPUSH` as one step. Two simultaneous join requests from the same patient can't both get in.
+
+**Reliable job queue.** The worker takes jobs with `BLMOVE jobs → processing`, which is
+atomic, and removes a job from `processing` only after it has finished. If the worker crashes
+mid-job, the job is still in `processing`, and the next worker start moves it back to the
+front of the queue. A job that throws is retried with a growing delay (1 s, 2 s, ...). After 5
+attempts it moves to `jobs:failed` and is logged as `JOB_FAILED`, so it is never silently
+dropped. Jobs that are malformed or of an unknown type go straight to the failed list.
+
+**If a promoted booking fails, the patient doesn't vanish.** The worker *reads* the
+waitlist and leaves the patient on it until their booking has **committed** in MySQL. It does
+not pop them first and hope the booking works. The booking goes through the same `bookSlot()`
+function as the API, with the same row locks and rules. Possible outcomes:
+
+| Outcome of booking the patient | What happens to them |
+|---|---|
+| Success | Removed from the waitlist, `WAITLIST_PROMOTED` logged, confirmation queued |
+| Slot taken again / day full / slot now in the past | Stay first in line; the job ends (`WAITLIST_SLOT_UNAVAILABLE`) |
+| Patient already booked elsewhere at that time | Stay on the list; the next patient is tried (`WAITLIST_SKIPPED`) |
+| Patient was deleted, or already has an appointment with this doctor that day | Removed (`WAITLIST_REMOVED`) and the next patient is tried |
+| Database/Redis error | Stay on the list; the job is retried |
+
+The "already has an appointment with this doctor that day" check makes promotion safe to
+retry. Suppose the booking commits but the worker crashes before removing the patient: on the
+retry they're recognised as already booked and removed, rather than getting a second
+appointment. This was tested by holding a MySQL lock so the first promotion attempt timed
+out: the patient stayed first in line, and the retry booked them.
+
+**Queueing never undoes a booking or cancellation.** Jobs are queued *after* the MySQL
+transaction commits, and `enqueue()` never throws. If Redis is down, the booking or
+cancellation still succeeds, the response reports `"waitlist_notified": false`, and a
+`JOB_ENQUEUE_FAILED` line is written to the audit log so staff can follow up. Without a
+separate "outbox" table, which the 3-table limit rules out, this is the trade-off chosen:
+the booking always stands, and missed notifications are visible in the log rather than lost
+silently.
+
+**Why Redis lists instead of Bull/BullMQ.** Every guarantee above comes from a few Redis
+commands (`BLMOVE`, `LREM`, `MULTI`, a 5-line Lua script) that can be explained line by line.
+A library would hide them. The cost is building retries and the dead-letter list by hand,
+and running a single worker: on startup, the worker requeues *everything* in `processing`,
+which is only safe when no other worker is mid-job.
+
+---
+
+## Part F — Unit Tests
+
+Run with `npm test` (Jest). Every test targets a **pure function**: no database, Redis,
+network or file system. They run anywhere in about a second, with nothing to set up. This is
+why the business rules live in `src/utils/` and not inside controllers or SQL.
+
+| File | Function(s) | What is covered |
+|---|---|---|
+| `tests/refund.test.js` | `calculateRefund`, `refundPercentage` | All three tiers, **both boundaries** (exactly 48 h and exactly 24 h), one minute either side of each boundary, refund based on the amount actually paid, cent rounding (`99.99` → `50.00`, `0.10` → `0.05`), DECIMAL strings from MySQL as well as numbers |
+| `tests/validateSlot.test.js` | `validateSlot`, `parseDay` | Valid slots, 16:30 as the last slot, **17:00 exactly** rejected, before opening, **09:15** and non-zero seconds off-boundary, past and "right now", **malformed dates** (impossible dates like `2026-02-30`, hour 24, minute 60, timezone suffix, missing time, `null`, numbers), leap years |
+| `tests/validators.test.js` | `parseId`, `validatePatient`, `validateDoctor` | Id parsing (`0`, negatives, decimals, `"12abc"`, leading zeros, INT overflow), trimming and email lower-casing, all errors reported at once, unknown fields, PUT vs PATCH rules, fee formats that fit `DECIMAL(8,2)` |
+
+### Documented boundary behaviour
+
+| Notice | Refund | Test |
+|---|---|---|
+| 48 h + 1 min | 100% | `one minute over 48 hours still refunds 100%` |
+| **exactly 48 h** | **50%** | `exactly 48 hours notice is in the 50% tier (boundary)` |
+| **exactly 24 h** | **50%** | `exactly 24 hours notice is still in the 50% tier (boundary)` |
+| 24 h − 1 min | 0% | `one minute under 24 hours refunds nothing` |
+
+The brief says "24–48 hours → 50%". Both ends of that range are read as **inclusive**: only
+notice *strictly more* than 48 h earns a full refund, and exactly 24 h still earns half.
+
+### Why the tests are reliable
+
+- **Fixed clock.** `validateSlot(value, now)` and `calculateRefund(amount, date, cancelledAt)`
+  take the current time as a parameter. Tests pass a fixed date, so they don't depend on
+  when they run, and "in the past" can be tested exactly.
+- **Exact boundaries.** Notice is built by subtracting exact milliseconds from the appointment
+  time. "Exactly 48 hours" is therefore exactly 48 h, not 47.9999 h.
+- **No floating-point money.** The refund is computed in integer cents, which the rounding
+  tests check.

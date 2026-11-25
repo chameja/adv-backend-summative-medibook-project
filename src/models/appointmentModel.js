@@ -51,6 +51,18 @@ async function patientHasAppointmentAt(conn, patientId, datetime) {
   return rows.length > 0;
 }
 
+// Returns whether the patient already has a booked appointment with this doctor on this day.
+async function patientHasAppointmentWithDoctorOnDay(patientId, doctorId, day, conn = pool) {
+  const [rows] = await conn.execute(
+    `SELECT 1 FROM appointments
+     WHERE patient_id = ? AND doctor_id = ? AND status = 'BOOKED'
+       AND appt_datetime >= ? AND appt_datetime < ? + INTERVAL 1 DAY
+     LIMIT 1`,
+    [patientId, doctorId, day, day]
+  );
+  return rows.length > 0;
+}
+
 // Inserts a booked appointment, sets its AP-xxx reference and returns its id.
 async function insertBooked(conn, { patientId, doctorId, datetime, amountPaid }) {
   const tempRef = `T${Date.now().toString(36).slice(-5)}${Math.random().toString(36).slice(2, 6)}`;
@@ -94,6 +106,7 @@ module.exports = {
   countActiveForDoctorOnDay,
   isSlotTaken,
   patientHasAppointmentAt,
+  patientHasAppointmentWithDoctorOnDay,
   insertBooked,
   lockById,
   markCancelled,

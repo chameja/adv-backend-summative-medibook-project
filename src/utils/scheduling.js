@@ -32,6 +32,13 @@ function parseDateTime(value) {
   };
 }
 
+// Parses a "YYYY-MM-DD" calendar day and returns it, or null if invalid.
+function parseDay(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = parseDateTime(`${value} 00:00`);
+  return parsed ? parsed.day : null;
+}
+
 // Checks a requested time is in the future, within 09:00-17:00 and on a 30-minute boundary.
 function validateSlot(value, now = new Date()) {
   const slot = parseDateTime(value);
@@ -82,17 +89,6 @@ function calculateRefund(amountPaid, appointmentDate, cancelledAt = new Date()) 
   };
 }
 
-module.exports = {
-  OPENING_MINUTES,
-  CLOSING_MINUTES,
-  SLOT_MINUTES,
-  MAX_APPOINTMENTS_PER_DAY,
-  parseDateTime,
-  validateSlot,
-  refundPercentage,
-  calculateRefund,
-};
-
 // Formats a Date as a MySQL DATETIME string in local time.
 function toSqlDateTime(date) {
   return (
@@ -101,4 +97,16 @@ function toSqlDateTime(date) {
   );
 }
 
-module.exports.toSqlDateTime = toSqlDateTime;
+module.exports = {
+  OPENING_MINUTES,
+  CLOSING_MINUTES,
+  SLOT_MINUTES,
+  MAX_APPOINTMENTS_PER_DAY,
+  parseDateTime,
+  parseDay,
+  validateSlot,
+  refundPercentage,
+  calculateRefund,
+  toSqlDateTime,
+};
+
