@@ -89,6 +89,14 @@ function calculateRefund(amountPaid, appointmentDate, cancelledAt = new Date()) 
   };
 }
 
+// Formats a Date as a MySQL DATETIME string in local time.
+function toSqlDateTime(date) {
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  );
+}
+
 module.exports = {
   OPENING_MINUTES,
   CLOSING_MINUTES,
@@ -99,14 +107,6 @@ module.exports = {
   validateSlot,
   refundPercentage,
   calculateRefund,
+  toSqlDateTime,
 };
 
-// Formats a Date as a MySQL DATETIME string in local time.
-function toSqlDateTime(date) {
-  return (
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-  );
-}
-
-module.exports.toSqlDateTime = toSqlDateTime;
